@@ -1,7 +1,11 @@
 package com.splitwise.backend.repository;
 
 import com.splitwise.backend.model.EmailVerificationToken;
+import jakarta.transaction.Transactional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.Optional;
 
@@ -9,5 +13,8 @@ public interface EmailVerificationTokenRepository extends JpaRepository<EmailVer
 
     Optional<EmailVerificationToken> findByToken(String token);
 
-    void deleteByUserId(String userId);
+    @Modifying
+    @Transactional
+    @Query("DELETE FROM EmailVerificationToken t WHERE t.user.id = :userId")
+    void deleteByUserId(@Param("userId") String userId);
 }
