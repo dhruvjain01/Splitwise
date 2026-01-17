@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --- Base --- */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-[#f6f7fb] text-slate-900 antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Display",
+    "SF Pro Text", Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+    "Segoe UI Emoji";
+}
+
+/* Softer default focus */
+*:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.12);
+  border-radius: 14px;
+}
+
+/* Autofill stays clean */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: rgb(15 23 42) !important;
+  -webkit-box-shadow: 0 0 0px 1000px white inset !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
