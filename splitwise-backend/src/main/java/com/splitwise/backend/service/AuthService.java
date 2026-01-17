@@ -234,8 +234,8 @@ public class AuthService {
 
         ResponseCookie cookie = ResponseCookie.from("refreshToken", refreshToken.getToken())
                 .httpOnly(true)
-                .secure(false) // localhost
-                .sameSite("Strict")
+                .secure(true) // localhost
+                .sameSite("None")
                 .path("/auth")
                 .maxAge(15 * 60)
                 .build();
@@ -275,8 +275,8 @@ public class AuthService {
 
         ResponseCookie cookie = ResponseCookie.from("refreshToken", newTokenValue)
                 .httpOnly(true)
-                .secure(false)
-                .sameSite("Strict")
+                .secure(true)
+                .sameSite("None")
                 .path("/auth")
                 .maxAge(15 * 60)
                 .build();
@@ -306,7 +306,7 @@ public class AuthService {
 
         ResponseCookie cookie = ResponseCookie.from("refreshToken", "")
                 .httpOnly(true)
-                .secure(false)
+                .secure(true)
                 .path("/auth")
                 .maxAge(0)
                 .build();
@@ -333,8 +333,8 @@ public class AuthService {
 
         ResponseCookie cookie = ResponseCookie.from("refreshToken", refreshToken.getToken())
                 .httpOnly(true)
-                .secure(false) // localhost
-                .sameSite("Strict")
+                .secure(true) // localhost
+                .sameSite("None")
                 .path("/auth")
                 .maxAge(15 * 60)
                 .build();
