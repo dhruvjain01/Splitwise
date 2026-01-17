@@ -1,0 +1,25 @@
+# Maven build output
+target/
+
+# Git + IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+*.iml
+
+# OS files
+.DS_Store
+
+# Logs
+*.log
+
+# Env/local config (never ship)
+.env
+.env.*
+application-local.properties
+
+# Node (in case frontend copied accidentally)
+node_modules/
+dist/
+build/
