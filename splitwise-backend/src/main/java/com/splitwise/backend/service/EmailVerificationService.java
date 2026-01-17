@@ -5,6 +5,7 @@ import com.splitwise.backend.model.User;
 import com.splitwise.backend.repository.EmailVerificationTokenRepository;
 import com.splitwise.backend.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -19,6 +20,9 @@ public class EmailVerificationService {
     private final UserRepository userRepository;
 
     private static final int EXPIRY_HOURS = 24;
+
+    @Value("${app.backend.base-url}")
+    private String backendBaseUrl;
 
     public void createAndSendToken(User user) {
 
@@ -36,7 +40,7 @@ public class EmailVerificationService {
 
         tokenRepository.save(verificationToken);
 
-        String link = "http://localhost:8080/auth/verify?token=" + token;
+        String link = backendBaseUrl + "/auth/verify?token=" + token;
 
         emailService.sendVerificationEmail(user.getEmail(), link);
     }
