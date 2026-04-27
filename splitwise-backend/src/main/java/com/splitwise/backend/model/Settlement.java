@@ -2,6 +2,7 @@ package com.splitwise.backend.model;
 
 import jakarta.persistence.*;
 import lombok.*;
+import java.math.BigDecimal;
 import java.time.*;
 import java.util.*;
 
@@ -27,8 +28,8 @@ public class Settlement {
     @JoinColumn(name = "to_user_id")
     private User toUser;
 
-    @Column(nullable = false)
-    private double amount;
+    @Column(nullable = false, precision = 19, scale = 6)
+    private BigDecimal amount;
 
     @Column(nullable = false)
     private Instant createdAt;

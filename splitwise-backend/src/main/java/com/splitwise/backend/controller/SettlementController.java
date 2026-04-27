@@ -4,6 +4,7 @@ import com.splitwise.backend.dto.ApiResponse;
 import com.splitwise.backend.dto.SettlementDTO;
 import com.splitwise.backend.dto.SettlementResponse;
 import com.splitwise.backend.service.ExpenseService;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -29,8 +30,7 @@ public class SettlementController {
     }
 
     @PostMapping
-    public ResponseEntity<ApiResponse<SettlementResponse>> settlePayment(@PathVariable String groupId, @RequestBody SettlementDTO request) {
-        System.out.println("CHECK");
+    public ResponseEntity<ApiResponse<SettlementResponse>> settlePayment(@PathVariable String groupId, @RequestBody @Valid SettlementDTO request) {
         return ResponseEntity.ok(
                 new ApiResponse<>(
                         "Payment Settled Successfully",

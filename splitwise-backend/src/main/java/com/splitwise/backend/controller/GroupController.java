@@ -11,11 +11,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Collection;
 import java.util.List;
 
 @RestController
-@RequestMapping("api/groups")
+@RequestMapping("/api/groups")
 public class GroupController {
     private final GroupService groupService;
 
@@ -24,7 +23,7 @@ public class GroupController {
     }
 
     @PostMapping
-    public ResponseEntity<ApiResponse<Group>> createGroup(@RequestBody CreateGroupRequest request) {
+    public ResponseEntity<ApiResponse<Group>> createGroup(@RequestBody @Valid CreateGroupRequest request) {
         Group group = groupService.createGroup(request.getName());
 
         ApiResponse<Group> response = new ApiResponse<>(
@@ -36,7 +35,7 @@ public class GroupController {
     }
 
     @PostMapping("/{groupId}/members")
-    public ResponseEntity<ApiResponse<Void>> addMember(@PathVariable String groupId, @RequestBody AddGroupMemberRequest request) {
+    public ResponseEntity<ApiResponse<Void>> addMember(@PathVariable String groupId, @RequestBody @Valid AddGroupMemberRequest request) {
         groupService.addMember(groupId, request.getEmail());
 
         ApiResponse<Void> response = new ApiResponse<>(

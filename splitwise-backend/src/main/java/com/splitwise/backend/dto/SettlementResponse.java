@@ -3,8 +3,8 @@ package com.splitwise.backend.dto;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.LocalDateTime;
 
 @Data
 @AllArgsConstructor
@@ -13,6 +13,6 @@ public class SettlementResponse {
     private String groupId;
     private String fromUserId;
     private String toUserId;
-    private double amount;
+    private BigDecimal amount;
     private Instant createdAt;
 }

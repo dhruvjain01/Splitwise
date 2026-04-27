@@ -3,6 +3,8 @@ package com.splitwise.backend.model;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.math.BigDecimal;
+
 @Entity
 @Table(name = "balances")
 @Data
@@ -26,6 +28,6 @@ public class Balance {
     @ManyToOne
     private User toUser;
 
-    private double amount;
+    @Column(nullable = false, precision = 19, scale = 6)
+    private BigDecimal amount;
 }
-

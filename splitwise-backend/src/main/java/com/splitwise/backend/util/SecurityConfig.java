@@ -48,13 +48,9 @@ public class SecurityConfig {
                 )
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers(
-//                                "/auth/login",
-//                                "/auth/signup",
-//                                "/auth/refresh",
-                                "/auth/**",
-                                "/api/users"
-                        ).permitAll()
+                        .requestMatchers(HttpMethod.POST, "/auth/login", "/auth/signup", "/auth/refresh", "/auth/logout").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/auth/verify").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/users").permitAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(
@@ -89,4 +85,3 @@ public class SecurityConfig {
         return source;
     }
 }
-

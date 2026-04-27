@@ -6,6 +6,7 @@ import com.splitwise.backend.dto.ExpenseResponse;
 import com.splitwise.backend.dto.UpdateExpenseRequest;
 import com.splitwise.backend.model.Expense;
 import com.splitwise.backend.service.ExpenseService;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -22,7 +23,7 @@ public class ExpenseController {
     }
 
     @PostMapping
-    public ResponseEntity<ApiResponse<ExpenseResponse>> addExpense(@PathVariable String groupId, @RequestBody CreateExpenseRequest request) {
+    public ResponseEntity<ApiResponse<ExpenseResponse>> addExpense(@PathVariable String groupId, @RequestBody @Valid CreateExpenseRequest request) {
         request.setGroupId(groupId);
 
         Expense expense = expenseService.addExpense(request);
@@ -56,7 +57,7 @@ public class ExpenseController {
     }
 
     @PutMapping("/{expenseId}")
-    public ResponseEntity<ApiResponse<ExpenseResponse>> updateExpense(@PathVariable String groupId, @PathVariable String expenseId, @RequestBody UpdateExpenseRequest request) {
+    public ResponseEntity<ApiResponse<ExpenseResponse>> updateExpense(@PathVariable String groupId, @PathVariable String expenseId, @RequestBody @Valid UpdateExpenseRequest request) {
         Expense expense = expenseService.updateExpense(groupId, expenseId, request);
         ExpenseResponse responseDto = new ExpenseResponse(
                 expense.getId(),

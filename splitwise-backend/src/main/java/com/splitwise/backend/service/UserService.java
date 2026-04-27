@@ -43,7 +43,8 @@ public class UserService {
     }
 
     public User getUserById(String id) {
-        return userRepository.findById(id).orElse(null);
+        return userRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + id));
     }
 
     public List<User> getAllUsers() {
@@ -68,4 +69,3 @@ public class UserService {
     }
 
 }
-

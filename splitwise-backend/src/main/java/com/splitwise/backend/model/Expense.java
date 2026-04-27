@@ -6,6 +6,7 @@ import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 
 @Entity
@@ -23,7 +24,8 @@ public class Expense {
     @Column(nullable = false)
     private String description;
 
-    private double amount;
+    @Column(nullable = false, precision = 19, scale = 6)
+    private BigDecimal amount;
 
     @Enumerated(EnumType.STRING)
     private SplitType splitType;
@@ -42,4 +44,3 @@ public class Expense {
     @Column(nullable = false)
     private Instant updatedAt;
 }
-

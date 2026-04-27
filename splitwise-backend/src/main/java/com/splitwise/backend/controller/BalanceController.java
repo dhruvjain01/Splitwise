@@ -5,11 +5,11 @@ import com.splitwise.backend.dto.BalanceResponse;
 import com.splitwise.backend.dto.SettlementDTO;
 import com.splitwise.backend.dto.SettlementResponse;
 import com.splitwise.backend.service.ExpenseService;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/groups/{groupId}/balances")
@@ -31,7 +31,7 @@ public class BalanceController {
     }
 
     @PostMapping
-    public ResponseEntity<ApiResponse<SettlementResponse>> settle(@PathVariable String groupId, @RequestBody SettlementDTO request) {
+    public ResponseEntity<ApiResponse<SettlementResponse>> settle(@PathVariable String groupId, @RequestBody @Valid SettlementDTO request) {
         return ResponseEntity.ok(
                 new ApiResponse<>(
                         "Amount Settled Successfully",

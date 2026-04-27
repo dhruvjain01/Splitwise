@@ -1,25 +1,55 @@
 package com.splitwise.backend.service;
 
-import com.splitwise.backend.dto.*;
+import com.splitwise.backend.dto.BalanceResponse;
+import com.splitwise.backend.dto.CreateExpenseRequest;
+import com.splitwise.backend.dto.ExpenseResponse;
+import com.splitwise.backend.dto.SettlementDTO;
+import com.splitwise.backend.dto.SettlementResponse;
+import com.splitwise.backend.dto.UpdateExpenseRequest;
 import com.splitwise.backend.exception.InvalidSplitException;
 import com.splitwise.backend.exception.ResourceNotFoundException;
+import com.splitwise.backend.exception.UnauthorizedException;
 import com.splitwise.backend.exception.UserNotInGroupException;
-import com.splitwise.backend.model.*;
-import com.splitwise.backend.repository.*;
+import com.splitwise.backend.model.Balance;
+import com.splitwise.backend.model.Expense;
+import com.splitwise.backend.model.Group;
+import com.splitwise.backend.model.GroupBalanceAgg;
+import com.splitwise.backend.model.Settlement;
+import com.splitwise.backend.model.SplitType;
+import com.splitwise.backend.model.User;
+import com.splitwise.backend.repository.BalanceRepository;
+import com.splitwise.backend.repository.ExpenseRepository;
+import com.splitwise.backend.repository.GroupBalanceAggRepository;
+import com.splitwise.backend.repository.SettlementRepository;
 import jakarta.transaction.Transactional;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
-import java.util.*;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Queue;
+import java.util.Set;
 
 @Service
 @Transactional
 public class ExpenseService {
 
+    private static final int MONEY_SCALE = 6;
+    private static final RoundingMode MONEY_ROUNDING = RoundingMode.HALF_UP;
+    private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(MONEY_SCALE, MONEY_ROUNDING);
+    private static final BigDecimal HUNDRED = new BigDecimal("100").setScale(MONEY_SCALE, MONEY_ROUNDING);
+
     private final GroupService groupService;
     private final UserService userService;
     private final BalanceRepository balanceRepository;
-    private final GroupRepository groupRepository;
     private final ExpenseRepository expenseRepository;
     private final GroupBalanceAggRepository groupBalanceAggRepository;
     private final SettlementRepository settlementRepository;
@@ -28,7 +58,6 @@ public class ExpenseService {
             GroupService groupService,
             UserService userService,
             BalanceRepository balanceRepository,
-            GroupRepository groupRepository,
             ExpenseRepository expenseRepository,
             GroupBalanceAggRepository groupBalanceAggRepository,
             SettlementRepository settlementRepository
@@ -36,39 +65,25 @@ public class ExpenseService {
         this.groupService = groupService;
         this.userService = userService;
         this.balanceRepository = balanceRepository;
-        this.groupRepository = groupRepository;
         this.expenseRepository = expenseRepository;
         this.groupBalanceAggRepository = groupBalanceAggRepository;
         this.settlementRepository = settlementRepository;
     }
 
-    // ================= CREATE EXPENSE =================
-
     public Expense addExpense(CreateExpenseRequest request) {
-
-        // Identify caller (JWT user)
         User currentUser = userService.getCurrentUser();
-
-        // Authorization check (caller must be in group)
         Group group = groupService.getGroup(request.getGroupId());
+        ensureCurrentUserInGroup(group, currentUser);
+        validateGroupExpense(group, request);
 
-        if (!group.getMembers().contains(currentUser)) {
-            throw new UserNotInGroupException(currentUser.getId());
-        }
-
-        validateGroupExpense(request);
-
-        // 1️⃣ Create and persist Expense FIRST
         Expense expense = new Expense();
         expense.setDescription(request.getDescription());
-        expense.setAmount(request.getAmount());
+        expense.setAmount(normalize(request.getAmount()));
         expense.setSplitType(request.getSplitType());
-        expense.setGroup(groupService.getGroup(request.getGroupId()));
+        expense.setGroup(group);
         expense.setPaidBy(userService.getUserById(request.getPaidByUserId()));
-
         expenseRepository.save(expense);
 
-        // 2️⃣ Apply split logic with expenseId
         switch (request.getSplitType()) {
             case EQUAL -> handleEqualSplit(request, expense.getId());
             case EXACT -> handleExactSplit(request, expense.getId());
@@ -78,253 +93,249 @@ public class ExpenseService {
         return expense;
     }
 
-    // ================= VALIDATION =================
+    private void validateGroupExpense(Group group, CreateExpenseRequest request) {
+        Set<String> groupMemberIds = group.getMembers().stream().map(User::getId).collect(HashSet::new, HashSet::add, HashSet::addAll);
 
-    private void validateGroupExpense(CreateExpenseRequest request) {
-        Group group = groupService.getGroup(request.getGroupId());
-
-        boolean payerInGroup = group.getMembers().stream()
-                .anyMatch(u -> u.getId().equals(request.getPaidByUserId()));
-
-        if (!payerInGroup) {
+        if (!groupMemberIds.contains(request.getPaidByUserId())) {
             throw new UserNotInGroupException(request.getPaidByUserId());
         }
 
-        for (String participantId : request.getParticipantUserIds()) {
-            boolean present = group.getMembers().stream()
-                    .anyMatch(u -> u.getId().equals(participantId));
-            if (!present) {
+        Set<String> participantIds = new HashSet<>(request.getParticipantUserIds());
+        if (participantIds.size() != request.getParticipantUserIds().size()) {
+            throw new InvalidSplitException("participantUserIds must not contain duplicates");
+        }
+
+        if (!participantIds.contains(request.getPaidByUserId())) {
+            throw new InvalidSplitException("paidByUserId must be included in participantUserIds");
+        }
+
+        for (String participantId : participantIds) {
+            if (!groupMemberIds.contains(participantId)) {
                 throw new UserNotInGroupException(participantId);
             }
         }
+
+        Map<String, BigDecimal> splitDetails = request.getSplitDetails();
+
+        if (request.getSplitType() == SplitType.EQUAL) {
+            if (splitDetails != null && !splitDetails.isEmpty()) {
+                throw new InvalidSplitException("splitDetails must be empty for EQUAL split");
+            }
+            return;
+        }
+
+        if (splitDetails == null || splitDetails.isEmpty()) {
+            throw new InvalidSplitException("splitDetails is required for EXACT and PERCENTAGE splits");
+        }
+
+        if (!splitDetails.keySet().equals(participantIds)) {
+            throw new InvalidSplitException("splitDetails keys must exactly match participantUserIds");
+        }
+
+        splitDetails.forEach((userId, value) -> {
+            if (value == null) {
+                throw new InvalidSplitException("splitDetails contains null for user " + userId);
+            }
+            if (value.compareTo(BigDecimal.ZERO) < 0) {
+                throw new InvalidSplitException("splitDetails cannot contain negative values");
+            }
+            if (request.getSplitType() == SplitType.PERCENTAGE && value.compareTo(BigDecimal.valueOf(100)) > 0) {
+                throw new InvalidSplitException("Each percentage entry must be <= 100");
+            }
+        });
     }
 
-    // ================= SPLIT HANDLERS =================
-
     private void handleEqualSplit(CreateExpenseRequest request, String expenseId) {
-        double share = request.getAmount() / request.getParticipantUserIds().size();
+        BigDecimal share = normalize(request.getAmount())
+                .divide(BigDecimal.valueOf(request.getParticipantUserIds().size()), MONEY_SCALE, MONEY_ROUNDING);
 
         for (String userId : request.getParticipantUserIds()) {
             if (!userId.equals(request.getPaidByUserId())) {
-                createBalance(
-                        request.getGroupId(),
-                        userId,
-                        request.getPaidByUserId(),
-                        share,
-                        expenseId
-                );
+                createBalance(request.getGroupId(), userId, request.getPaidByUserId(), share, expenseId);
             }
         }
     }
 
     private void handleExactSplit(CreateExpenseRequest request, String expenseId) {
-        double total = request.getSplitDetails().values()
-                .stream().mapToDouble(Double::doubleValue).sum();
+        BigDecimal total = request.getSplitDetails().values().stream()
+                .map(this::normalize)
+                .reduce(ZERO, BigDecimal::add);
 
-        if (Double.compare(total, request.getAmount()) != 0) {
+        if (total.compareTo(normalize(request.getAmount())) != 0) {
             throw new InvalidSplitException("Exact split total must equal expense amount");
         }
 
         request.getSplitDetails().forEach((userId, amount) -> {
             if (!userId.equals(request.getPaidByUserId())) {
-                createBalance(
-                        request.getGroupId(),
-                        userId,
-                        request.getPaidByUserId(),
-                        amount,
-                        expenseId
-                );
+                createBalance(request.getGroupId(), userId, request.getPaidByUserId(), normalize(amount), expenseId);
             }
         });
     }
 
     private void handlePercentageSplit(CreateExpenseRequest request, String expenseId) {
-        double total = request.getSplitDetails().values()
-                .stream().mapToDouble(Double::doubleValue).sum();
+        BigDecimal total = request.getSplitDetails().values().stream()
+                .map(this::normalize)
+                .reduce(ZERO, BigDecimal::add);
 
-        if (Double.compare(total, 100.0) != 0) {
+        if (total.compareTo(HUNDRED) != 0) {
             throw new InvalidSplitException("Percentage split total must be 100");
         }
 
         request.getSplitDetails().forEach((userId, percent) -> {
             if (!userId.equals(request.getPaidByUserId())) {
-                double amount = request.getAmount() * percent / 100;
-                createBalance(
-                        request.getGroupId(),
-                        userId,
-                        request.getPaidByUserId(),
-                        amount,
-                        expenseId
-                );
+                BigDecimal amount = normalize(request.getAmount())
+                        .multiply(normalize(percent))
+                        .divide(HUNDRED, MONEY_SCALE, MONEY_ROUNDING);
+                createBalance(request.getGroupId(), userId, request.getPaidByUserId(), amount, expenseId);
             }
         });
     }
 
-    // ================= BALANCE CREATION =================
+    private void createBalance(String groupId, String fromUserId, String toUserId, BigDecimal amount, String expenseId) {
+        BigDecimal normalizedAmount = normalize(amount);
+        if (normalizedAmount.compareTo(ZERO) <= 0) {
+            return;
+        }
 
-    private void createBalance(String groupId, String fromUserId, String toUserId, double amount, String expenseId) {
-        // Save balance in balances table
         Balance balance = new Balance();
         balance.setExpenseId(expenseId);
         balance.setGroup(groupService.getGroup(groupId));
         balance.setFromUser(userService.getUserById(fromUserId));
         balance.setToUser(userService.getUserById(toUserId));
-        balance.setAmount(amount);
+        balance.setAmount(normalizedAmount);
         balanceRepository.save(balance);
 
-        // Update the group_balances_agg table
-        upsertAggregateBalance(groupId, fromUserId, toUserId, amount);
+        upsertAggregateBalance(groupId, fromUserId, toUserId, normalizedAmount);
     }
 
-    private void upsertAggregateBalance(String groupId, String fromUserId, String toUserId, double delta) {
-        // Don’t store self edges
-        if (fromUserId.equals(toUserId)) {
+    private void upsertAggregateBalance(String groupId, String fromUserId, String toUserId, BigDecimal delta) {
+        BigDecimal normalizedDelta = normalize(delta);
+
+        if (normalizedDelta.compareTo(ZERO) == 0 || fromUserId.equals(toUserId)) {
             return;
         }
 
-        var existingOpt = groupBalanceAggRepository
+        Optional<GroupBalanceAgg> forwardOpt = groupBalanceAggRepository
                 .findByGroupIdAndFromUserIdAndToUserId(groupId, fromUserId, toUserId);
+        Optional<GroupBalanceAgg> reverseOpt = groupBalanceAggRepository
+                .findByGroupIdAndFromUserIdAndToUserId(groupId, toUserId, fromUserId);
 
-        if (existingOpt.isPresent()) {
-            GroupBalanceAgg existing = existingOpt.get();
-            existing.setAmount(existing.getAmount() + delta);
+        BigDecimal forward = forwardOpt.map(GroupBalanceAgg::getAmount).map(this::normalize).orElse(ZERO);
+        BigDecimal reverse = reverseOpt.map(GroupBalanceAgg::getAmount).map(this::normalize).orElse(ZERO);
 
-            // if it becomes 0 or negative, clean it
-            if (existing.getAmount() <= 0.000001) {
-                groupBalanceAggRepository.delete(existing);
-            } else {
-                groupBalanceAggRepository.save(existing);
-            }
-        } else {
-            // create only if positive delta
-            if (delta <= 0.000001) {
-                return;
-            }
+        BigDecimal net = forward.subtract(reverse).add(normalizedDelta);
 
+        forwardOpt.ifPresent(groupBalanceAggRepository::delete);
+        reverseOpt.ifPresent(groupBalanceAggRepository::delete);
+        groupBalanceAggRepository.flush(); // ✅ force deletes to DB before inserting
+
+        if (net.compareTo(ZERO) > 0) {
             GroupBalanceAgg agg = new GroupBalanceAgg();
             agg.setGroup(groupService.getGroup(groupId));
             agg.setFromUser(userService.getUserById(fromUserId));
             agg.setToUser(userService.getUserById(toUserId));
-            agg.setAmount(delta);
-
-            System.out.println("Agg : " + agg);
-
+            agg.setAmount(normalize(net));
+            groupBalanceAggRepository.save(agg);
+        } else if (net.compareTo(ZERO) < 0) {
+            GroupBalanceAgg agg = new GroupBalanceAgg();
+            agg.setGroup(groupService.getGroup(groupId));
+            agg.setFromUser(userService.getUserById(toUserId));
+            agg.setToUser(userService.getUserById(fromUserId));
+            agg.setAmount(normalize(net.abs()));
             groupBalanceAggRepository.save(agg);
         }
     }
 
-    // ================= READ BALANCES =================
-
     public List<BalanceResponse> getBalances(String groupId) {
-
         User currentUser = userService.getCurrentUser();
         Group group = groupService.getGroup(groupId);
-
-        if (!group.getMembers().contains(currentUser)) {
-            throw new UserNotInGroupException(currentUser.getId());
-        }
-
-        if (!groupRepository.existsById(groupId)) {
-            throw new ResourceNotFoundException("Group not found with id: " + groupId);
-        }
+        ensureCurrentUserInGroup(group, currentUser);
 
         List<GroupBalanceAgg> balances = groupBalanceAggRepository.findByGroupId(groupId);
 
         return balances.stream()
-                .filter(b -> b.getAmount() > 0)
+                .filter(b -> normalize(b.getAmount()).compareTo(ZERO) > 0)
                 .map(b -> new BalanceResponse(
                         b.getFromUser().getId(),
                         b.getToUser().getId(),
-                        b.getAmount()
+                        normalize(b.getAmount())
                 ))
                 .toList();
     }
 
-    // ================= SETTLEMENT =================
-
     public List<SettlementDTO> settleUp(String groupId) {
-
         User currentUser = userService.getCurrentUser();
         Group group = groupService.getGroup(groupId);
-
-        if (!group.getMembers().contains(currentUser)) {
-            throw new UserNotInGroupException(currentUser.getId());
-        }
-
-        if (!groupRepository.existsById(groupId)) {
-            throw new ResourceNotFoundException("Group not found with id: " + groupId);
-        }
+        ensureCurrentUserInGroup(group, currentUser);
 
         List<GroupBalanceAgg> balances = groupBalanceAggRepository.findByGroupId(groupId);
-        Map<String, Double> net = new HashMap<>();
+        Map<String, BigDecimal> net = new HashMap<>();
 
-        for (GroupBalanceAgg b : balances) {
-            net.put(b.getFromUser().getId(),
-                    net.getOrDefault(b.getFromUser().getId(), 0.0) - b.getAmount());
-            net.put(b.getToUser().getId(),
-                    net.getOrDefault(b.getToUser().getId(), 0.0) + b.getAmount());
+        for (GroupBalanceAgg balance : balances) {
+            net.put(balance.getFromUser().getId(),
+                    net.getOrDefault(balance.getFromUser().getId(), ZERO).subtract(normalize(balance.getAmount())));
+            net.put(balance.getToUser().getId(),
+                    net.getOrDefault(balance.getToUser().getId(), ZERO).add(normalize(balance.getAmount())));
         }
 
-        Queue<Map.Entry<String, Double>> debtors = new ArrayDeque<>();
-        Queue<Map.Entry<String, Double>> creditors = new ArrayDeque<>();
+        Queue<Map.Entry<String, BigDecimal>> debtors = new ArrayDeque<>();
+        Queue<Map.Entry<String, BigDecimal>> creditors = new ArrayDeque<>();
 
         net.forEach((userId, amount) -> {
-            if (amount < 0) debtors.add(Map.entry(userId, amount));
-            else if (amount > 0) creditors.add(Map.entry(userId, amount));
+            if (amount.compareTo(ZERO) < 0) {
+                debtors.add(Map.entry(userId, amount));
+            } else if (amount.compareTo(ZERO) > 0) {
+                creditors.add(Map.entry(userId, amount));
+            }
         });
 
         List<SettlementDTO> settlements = new ArrayList<>();
 
         while (!debtors.isEmpty() && !creditors.isEmpty()) {
-            var debtor = debtors.poll();
-            var creditor = creditors.poll();
+            Map.Entry<String, BigDecimal> debtor = debtors.poll();
+            Map.Entry<String, BigDecimal> creditor = creditors.poll();
 
-            double settleAmount = Math.min(-debtor.getValue(), creditor.getValue());
+            BigDecimal settleAmount = debtor.getValue().abs().min(creditor.getValue());
 
             settlements.add(new SettlementDTO(
                     debtor.getKey(),
                     creditor.getKey(),
-                    settleAmount
+                    normalize(settleAmount)
             ));
 
-            if (debtor.getValue() + settleAmount < 0) {
-                debtors.add(Map.entry(debtor.getKey(), debtor.getValue() + settleAmount));
+            BigDecimal remainingDebtor = debtor.getValue().add(settleAmount);
+            BigDecimal remainingCreditor = creditor.getValue().subtract(settleAmount);
+
+            if (remainingDebtor.compareTo(ZERO) < 0) {
+                debtors.add(Map.entry(debtor.getKey(), normalize(remainingDebtor)));
             }
-            if (creditor.getValue() - settleAmount > 0) {
-                creditors.add(Map.entry(creditor.getKey(), creditor.getValue() - settleAmount));
+            if (remainingCreditor.compareTo(ZERO) > 0) {
+                creditors.add(Map.entry(creditor.getKey(), normalize(remainingCreditor)));
             }
         }
 
         return settlements;
     }
 
-    // ================= DELETE / UPDATE =================
-
     private void reverseExpenseImpact(String expenseId) {
         List<Balance> expenseBalances = balanceRepository.findByExpenseId(expenseId);
 
-        // Reverse impact from aggregate table
-        for (Balance b : expenseBalances) {
+        for (Balance balance : expenseBalances) {
             upsertAggregateBalance(
-                    b.getGroup().getId(),
-                    b.getFromUser().getId(),
-                    b.getToUser().getId(),
-                    -b.getAmount()
+                    balance.getGroup().getId(),
+                    balance.getFromUser().getId(),
+                    balance.getToUser().getId(),
+                    normalize(balance.getAmount()).negate()
             );
         }
 
-        // Delete ledger rows
         balanceRepository.deleteAll(expenseBalances);
     }
 
     public void deleteExpense(String groupId, String expenseId) {
-
         User currentUser = userService.getCurrentUser();
         Group group = groupService.getGroup(groupId);
-
-        if (!group.getMembers().contains(currentUser)) {
-            throw new UserNotInGroupException(currentUser.getId());
-        }
+        ensureCurrentUserInGroup(group, currentUser);
 
         Expense expense = expenseRepository.findById(expenseId)
                 .orElseThrow(() -> new ResourceNotFoundException("Expense not found"));
@@ -339,30 +350,21 @@ public class ExpenseService {
 
     @Transactional
     public Expense updateExpense(String groupId, String expenseId, UpdateExpenseRequest request) {
-
         User currentUser = userService.getCurrentUser();
         Group group = groupService.getGroup(groupId);
-
-        if (!group.getMembers().contains(currentUser)) {
-            throw new UserNotInGroupException(currentUser.getId());
-        }
+        ensureCurrentUserInGroup(group, currentUser);
 
         Expense existing = expenseRepository.findById(expenseId)
-                .orElseThrow(() ->
-                        new ResourceNotFoundException("Expense not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Expense not found"));
 
         if (!existing.getGroup().getId().equals(groupId)) {
             throw new IllegalArgumentException("Expense does not belong to group");
         }
 
-        // 1️⃣ Reverse balances
         reverseExpenseImpact(expenseId);
-
-        // 2️⃣ Delete expense SAFELY
         expenseRepository.deleteById(expenseId);
-        expenseRepository.flush();   // 🔑 prevents stale entity
+        expenseRepository.flush();
 
-        // 3️⃣ Recreate expense
         CreateExpenseRequest newRequest = new CreateExpenseRequest();
         newRequest.setGroupId(groupId);
         newRequest.setDescription(request.getDescription());
@@ -376,155 +378,136 @@ public class ExpenseService {
     }
 
     public List<ExpenseResponse> getExpensesByGroup(String groupId) {
-
         User currentUser = userService.getCurrentUser();
         Group group = groupService.getGroup(groupId);
+        ensureCurrentUserInGroup(group, currentUser);
 
-        if (!group.getMembers().contains(currentUser)) {
-            throw new UserNotInGroupException(currentUser.getId());
-        }
-
-        if (!groupRepository.existsById(groupId)) {
-            throw new ResourceNotFoundException("Group not found with id: " + groupId);
-        }
-
-        List<Expense> expenses =
-                expenseRepository.findByGroupIdOrderByIdDesc(groupId);
-
+        List<Expense> expenses = expenseRepository.findByGroupIdOrderByCreatedAtDesc(groupId);
         List<ExpenseResponse> response = new ArrayList<>();
 
         for (Expense expense : expenses) {
-
-            List<Balance> balances =
-                    balanceRepository.findByExpenseId(expense.getId());
+            List<Balance> balances = balanceRepository.findByExpenseId(expense.getId());
 
             Set<String> participants = new HashSet<>();
-            Map<String, Double> splitDetails = new HashMap<>();
+            Map<String, BigDecimal> splitDetails = new HashMap<>();
 
-            for (Balance b : balances) {
-                participants.add(b.getFromUser().getId());
+            for (Balance balance : balances) {
+                participants.add(balance.getFromUser().getId());
 
-                // For EXACT & PERCENTAGE → return amount owed
                 if (expense.getSplitType() != SplitType.EQUAL) {
                     splitDetails.merge(
-                            b.getFromUser().getId(),
-                            b.getAmount(),
-                            Double::sum
+                            balance.getFromUser().getId(),
+                            normalize(balance.getAmount()),
+                            BigDecimal::add
                     );
                 }
             }
 
-            // PaidBy is always a participant
             participants.add(expense.getPaidBy().getId());
 
-            response.add(
-                    new ExpenseResponse(
-                            expense.getId(),
-                            expense.getDescription(),
-                            expense.getAmount(),
-                            expense.getSplitType(),
-                            expense.getPaidBy().getId(),
-                            new ArrayList<>(participants),
-                            expense.getSplitType() == SplitType.EQUAL ? null : splitDetails,
-                            expense.getCreatedAt(),
-                            expense.getUpdatedAt()
-                    )
-            );
+            response.add(new ExpenseResponse(
+                    expense.getId(),
+                    expense.getDescription(),
+                    normalize(expense.getAmount()),
+                    expense.getSplitType(),
+                    expense.getPaidBy().getId(),
+                    new ArrayList<>(participants),
+                    expense.getSplitType() == SplitType.EQUAL ? null : splitDetails,
+                    expense.getCreatedAt(),
+                    expense.getUpdatedAt()
+            ));
         }
 
         return response;
     }
 
-    public ExpenseResponse getExpenseById(String groupId, String expenseId){
-        User user = userService.getCurrentUser();
+    public ExpenseResponse getExpenseById(String groupId, String expenseId) {
+        User currentUser = userService.getCurrentUser();
         Group group = groupService.getGroup(groupId);
-
-        if (!group.getMembers().contains(user)) {
-            throw new UserNotInGroupException(user.getId());
-        }
-
-        if (!groupRepository.existsById(groupId)) {
-            throw new ResourceNotFoundException("Group not found with id: " + groupId);
-        }
+        ensureCurrentUserInGroup(group, currentUser);
 
         Expense expense = expenseRepository.findById(expenseId)
-                .orElseThrow(() ->
-                        new ResourceNotFoundException("Expense not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Expense not found"));
 
         if (!expense.getGroup().getId().equals(groupId)) {
             throw new IllegalArgumentException("Expense does not belong to group");
         }
 
-        List<Balance> balances =
-                balanceRepository.findByExpenseId(expense.getId());
+        List<Balance> balances = balanceRepository.findByExpenseId(expense.getId());
 
         Set<String> participants = new HashSet<>();
-        Map<String, Double> splitDetails = new HashMap<>();
+        Map<String, BigDecimal> splitDetails = new HashMap<>();
 
-        for (Balance b : balances) {
-            participants.add(b.getFromUser().getId());
+        for (Balance balance : balances) {
+            participants.add(balance.getFromUser().getId());
 
-            // For EXACT & PERCENTAGE → return amount owed
             if (expense.getSplitType() != SplitType.EQUAL) {
                 splitDetails.merge(
-                        b.getFromUser().getId(),
-                        b.getAmount(),
-                        Double::sum
+                        balance.getFromUser().getId(),
+                        normalize(balance.getAmount()),
+                        BigDecimal::add
                 );
             }
         }
 
-        // PaidBy is always a participant
         participants.add(expense.getPaidBy().getId());
 
         return new ExpenseResponse(
-            expense.getId(),
-            expense.getDescription(),
-            expense.getAmount(),
-            expense.getSplitType(),
-            expense.getPaidBy().getId(),
-            new ArrayList<>(participants),
-            expense.getSplitType() == SplitType.EQUAL ? null : splitDetails,
-            expense.getCreatedAt(),
-            expense.getUpdatedAt()
+                expense.getId(),
+                expense.getDescription(),
+                normalize(expense.getAmount()),
+                expense.getSplitType(),
+                expense.getPaidBy().getId(),
+                new ArrayList<>(participants),
+                expense.getSplitType() == SplitType.EQUAL ? null : splitDetails,
+                expense.getCreatedAt(),
+                expense.getUpdatedAt()
         );
     }
 
     @Transactional
-    public SettlementResponse settleViaBalance(String groupId, SettlementDTO settlementDTO){
-        if (settlementDTO.getAmount() <= 0) {
-            throw new RuntimeException("Settlement amount must be greater than 0");
+    public SettlementResponse settleViaBalance(String groupId, SettlementDTO settlementDTO) {
+        Group group = groupService.getGroup(groupId);
+        User currentUser = userService.getCurrentUser();
+        ensureCurrentUserInGroup(group, currentUser);
+
+        if (!Objects.equals(currentUser.getId(), settlementDTO.getFromUserId())) {
+            throw new UnauthorizedException("You can only settle balances from your own account");
         }
 
-        Group group = groupService.getGroup(groupId);
+        if (Objects.equals(settlementDTO.getFromUserId(), settlementDTO.getToUserId())) {
+            throw new IllegalArgumentException("fromUserId and toUserId cannot be the same");
+        }
 
-        // Validate users exist + are group members
+        BigDecimal amountToSettle = normalize(settlementDTO.getAmount());
+        if (amountToSettle.compareTo(ZERO) <= 0) {
+            throw new IllegalArgumentException("Settlement amount must be greater than 0");
+        }
+
         User fromUser = userService.getUserById(settlementDTO.getFromUserId());
         User toUser = userService.getUserById(settlementDTO.getToUserId());
 
         if (!group.getMembers().contains(fromUser)) {
             throw new UserNotInGroupException(fromUser.getId());
         }
-
         if (!group.getMembers().contains(toUser)) {
             throw new UserNotInGroupException(toUser.getId());
         }
 
         GroupBalanceAgg aggBalance = groupBalanceAggRepository
                 .findByGroupIdAndFromUserIdAndToUserId(groupId, fromUser.getId(), toUser.getId())
-                .orElseThrow(() -> new RuntimeException("No balance exists between these users"));
+                .orElseThrow(() -> new IllegalArgumentException("No balance exists between these users"));
 
-        System.out.println(aggBalance.getAmount());
-        if (aggBalance.getAmount() + 0.000001 < settlementDTO.getAmount()) {
-            throw new RuntimeException("Settlement amount exceeds due amount");
+        BigDecimal due = normalize(aggBalance.getAmount());
+        if (due.compareTo(amountToSettle) < 0) {
+            throw new IllegalArgumentException("Settlement amount exceeds due amount");
         }
-        // Update aggregated balance
-        double remaining = aggBalance.getAmount() - settlementDTO.getAmount();
 
-        if (remaining <= 0.000001) {
+        BigDecimal remaining = due.subtract(amountToSettle);
+        if (remaining.compareTo(ZERO) == 0) {
             groupBalanceAggRepository.delete(aggBalance);
         } else {
-            aggBalance.setAmount(remaining);
+            aggBalance.setAmount(normalize(remaining));
             groupBalanceAggRepository.save(aggBalance);
         }
 
@@ -532,49 +515,50 @@ public class ExpenseService {
         settlement.setGroup(group);
         settlement.setToUser(toUser);
         settlement.setFromUser(fromUser);
-        settlement.setAmount(settlementDTO.getAmount());
+        settlement.setAmount(amountToSettle);
         settlement.setCreatedAt(Instant.now());
 
-        System.out.println("Settlement " + settlement);
-
         Settlement settled = settlementRepository.save(settlement);
-
-        System.out.println("Settled " + settled);
 
         return new SettlementResponse(
                 settled.getId(),
                 group.getId(),
                 fromUser.getId(),
                 toUser.getId(),
-                settled.getAmount(),
+                normalize(settled.getAmount()),
                 settled.getCreatedAt()
         );
     }
 
     @Transactional
-    public SettlementResponse settleViaSettle(String groupId, SettlementDTO settlementDTO){
-        if (settlementDTO.getAmount() <= 0) {
-            throw new RuntimeException("Settlement amount must be greater than 0");
+    public SettlementResponse settleViaSettle(String groupId, SettlementDTO settlementDTO) {
+        Group group = groupService.getGroup(groupId);
+        User currentUser = userService.getCurrentUser();
+        ensureCurrentUserInGroup(group, currentUser);
+
+        if (!Objects.equals(currentUser.getId(), settlementDTO.getFromUserId())) {
+            throw new UnauthorizedException("You can only settle balances from your own account");
         }
 
-        Group group = groupService.getGroup(groupId);
+        if (Objects.equals(settlementDTO.getFromUserId(), settlementDTO.getToUserId())) {
+            throw new IllegalArgumentException("fromUserId and toUserId cannot be the same");
+        }
 
-        // Validate users exist + are group members
+        BigDecimal amountToSettle = normalize(settlementDTO.getAmount());
+        if (amountToSettle.compareTo(ZERO) <= 0) {
+            throw new IllegalArgumentException("Settlement amount must be greater than 0");
+        }
+
         User fromUser = userService.getUserById(settlementDTO.getFromUserId());
         User toUser = userService.getUserById(settlementDTO.getToUserId());
-
-        System.out.println("From : " + fromUser.getId());
-        System.out.println("To : " + toUser.getId());
 
         if (!group.getMembers().contains(fromUser)) {
             throw new UserNotInGroupException(fromUser.getId());
         }
-
         if (!group.getMembers().contains(toUser)) {
             throw new UserNotInGroupException(toUser.getId());
         }
 
-        double amountToSettle = settlementDTO.getAmount();
 
         upsertAggregateBalance(group.getId(), toUser.getId(), fromUser.getId(), amountToSettle);
 
@@ -585,19 +569,28 @@ public class ExpenseService {
         settlement.setAmount(amountToSettle);
         settlement.setCreatedAt(Instant.now());
 
-        System.out.println("Settlement " + settlement);
-
         Settlement settled = settlementRepository.save(settlement);
-
-        System.out.println("Settled " + settled);
 
         return new SettlementResponse(
                 settled.getId(),
                 group.getId(),
                 fromUser.getId(),
                 toUser.getId(),
-                settled.getAmount(),
+                normalize(settled.getAmount()),
                 settled.getCreatedAt()
         );
+    }
+
+    private void ensureCurrentUserInGroup(Group group, User user) {
+        if (!group.getMembers().contains(user)) {
+            throw new UserNotInGroupException(user.getId());
+        }
+    }
+
+    private BigDecimal normalize(BigDecimal value) {
+        if (value == null) {
+            throw new InvalidSplitException("Amount cannot be null");
+        }
+        return value.setScale(MONEY_SCALE, MONEY_ROUNDING);
     }
 }

@@ -4,6 +4,7 @@ import com.splitwise.backend.model.SplitType;
 import jakarta.validation.constraints.*;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.util.*;
 
 @Data
@@ -12,8 +13,9 @@ public class UpdateExpenseRequest {
     @NotBlank
     private String description;
 
-    @Positive
-    private double amount;
+    @NotNull
+    @DecimalMin(value = "0.01")
+    private BigDecimal amount;
 
     @NotBlank
     private String paidByUserId;
@@ -24,6 +26,5 @@ public class UpdateExpenseRequest {
     @NotNull
     private SplitType splitType;
 
-    private Map<String, Double> splitDetails;
+    private Map<String, BigDecimal> splitDetails;
 }
-

@@ -5,13 +5,10 @@ import com.splitwise.backend.model.User;
 import com.splitwise.backend.service.AuthService;
 import com.splitwise.backend.service.EmailVerificationService;
 import com.splitwise.backend.service.UserService;
-import com.splitwise.backend.util.JwtUtil;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
@@ -24,15 +21,11 @@ public class AuthController {
     String frontendURL;
 
     private final UserService userService;
-    private final JwtUtil jwtUtil;
-    private final PasswordEncoder passwordEncoder;
     private final AuthService authService;
     private final EmailVerificationService emailVerificationService;
 
-    public AuthController(UserService userService, JwtUtil jwtUtil, AuthService authService,EmailVerificationService emailVerificationService) {
+    public AuthController(UserService userService, AuthService authService, EmailVerificationService emailVerificationService) {
         this.userService = userService;
-        this.jwtUtil = jwtUtil;
-        this.passwordEncoder = new BCryptPasswordEncoder();
         this.authService = authService;
         this.emailVerificationService = emailVerificationService;
     }
@@ -87,7 +80,6 @@ public class AuthController {
 
     @PostMapping("/logout")
     public ApiResponse<Void> logout(@CookieValue(name = "refreshToken", required = false) String rawToken, HttpServletResponse response) {
-        System.out.println("logout");
         authService.logout(rawToken, response);
         return new ApiResponse<>("Logged out successfully", null);
     }
@@ -100,11 +92,10 @@ public class AuthController {
 
     @GetMapping("/verify")
     public void verifyEmail(@RequestParam String token, HttpServletResponse response) throws IOException {
-        System.out.println(frontendURL);
         try {
             User user = emailVerificationService.verifyAndReturnUser(token);
-            String accessToken = authService.loginAfterVerification(user, response);
-            String redirectUrl = frontendURL + "/verify-success?token=" + accessToken;
+            authService.loginAfterVerification(user, response);
+            String redirectUrl = frontendURL + "/verify-success";
             response.sendRedirect(redirectUrl);
         } catch (Exception e) {
             response.sendRedirect(frontendURL + "/verify-failed");
@@ -112,5 +103,4 @@ public class AuthController {
     }
 
 }
-
 
