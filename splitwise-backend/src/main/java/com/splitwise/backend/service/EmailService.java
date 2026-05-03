@@ -3,24 +3,36 @@ package com.splitwise.backend.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import jakarta.mail.internet.MimeMessage;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
-import org.springframework.mail.SimpleMailMessage;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 import org.springframework.web.server.ResponseStatusException;
+
+import java.util.List;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class EmailService {
 
-    @Value("${spring.mail.properties.mail.smtp.from}")
-    private String mailFrom;
+    private final RestTemplate restTemplate = new RestTemplate();
 
-    private final JavaMailSender mailSender;
+    @Value("${brevo.api.key:${brevo.api-key}}")
+    private String brevoApiKey;
+
+    @Value("${brevo.sender.email}")
+    private String fromEmail;
+
+    @Value("${brevo.sender.name:Splitwise}")
+    private String fromName;
+
+    private static final String BREVO_SEND_EMAIL_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
 
     @Async
     public void sendVerificationEmail(String to, String verificationLink) {
@@ -38,23 +50,33 @@ public class EmailService {
             log.info("Verification email sent to {}", to);
 
         } catch (Exception e) {
-            log.error("SMTP email send exception to={}", to, e);
+            log.error("Brevo email send exception to={}", to, e);
         }
     }
 
     public void sendHtmlEmail(String to, String subject, String htmlContent) {
-
         try{
-            MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message,"utf-8");
-            helper.setFrom(mailFrom);
-            helper.setTo(to);
-            helper.setSubject(subject);
-            helper.setText(htmlContent, true);
-            mailSender.send(message);
+            Map<String, Object> payload = Map.of(
+                    "sender", Map.of("name", fromName, "email", fromEmail),
+                    "to", List.of(Map.of("email", to)),
+                    "subject", subject,
+                    "htmlContent", htmlContent
+            );
+            sendViaBrevo(payload);
+        } catch (Exception exp){
+            throw new RuntimeException("Failed to send email");
         }
-        catch (Exception exp){
-            throw new RuntimeException("Failed to Send Mail : " + exp);
+    }
+
+    private void sendViaBrevo(Map<String, Object> payload) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("api-key", brevoApiKey);
+
+        HttpEntity<Map<String, Object>> request = new HttpEntity<>(payload, headers);
+        ResponseEntity<String> response = restTemplate.postForEntity(BREVO_SEND_EMAIL_ENDPOINT, request, String.class);
+        if (!response.getStatusCode().is2xxSuccessful()) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Brevo API request failed");
         }
     }
 }
