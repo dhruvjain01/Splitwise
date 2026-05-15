@@ -61,8 +61,26 @@ export default function EditExpenseModal({ open, onClose, members, expense, onUp
       });
     }
 
-    // ✅ IMPORTANT FIX:
-    // if backend stores PERCENTAGE splitDetails as AMOUNTS,
+    const participantIds = Array.isArray(expense.participantUserIds)
+      ? expense.participantUserIds
+      : [];
+
+    // Backfill one missing participant value from remainder.
+    // Backend may omit one side (commonly payer/self) in splitDetails.
+    if (st === "EXACT" || st === "PERCENTAGE") {
+      const knownIds = participantIds.filter((id) => Number(init[id] || 0) > 0);
+      const missingIds = participantIds.filter((id) => Number(init[id] || 0) <= 0);
+      const knownSum = knownIds.reduce((acc, id) => acc + Number(init[id] || 0), 0);
+
+      if (missingIds.length === 1) {
+        const remaining = Number(expense.amount || 0) - knownSum;
+        if (remaining > 0) {
+          init[missingIds[0]] = String(Number(remaining.toFixed(6)));
+        }
+      }
+    }
+
+    // If backend stores PERCENTAGE splitDetails as amounts,
     // convert amounts -> percentages for editing UI.
     const totalAmt = Number(expense.amount || 0);
     if (st === "PERCENTAGE" && totalAmt > 0) {
